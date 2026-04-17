@@ -1,20 +1,27 @@
 """主Bot管理命令处理器 - 处理用户Bot的添加、查看、删除等操作"""
 import html
+import io
+import json
 import logging
 import urllib.parse
+from datetime import datetime
 
 import httpx
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ContextTypes, ConversationHandler, MessageHandler, filters
+    ApplicationHandlerStop, ContextTypes, ConversationHandler, MessageHandler, filters
 )
 
 from database import (
     add_user_bot, get_user_bots_by_owner, get_user_bot_by_id,
     get_user_bot_by_token, get_user_bot_by_telegram_id,
     delete_user_bot as db_delete_user_bot,
-    update_user_bot_status, get_platform_stats
+    update_user_bot_status, get_platform_stats,
+    get_platform_bot_details, get_platform_export_data,
+    add_to_blacklist, remove_from_blacklist, is_user_blacklisted,
+    get_blacklist, get_blacklist_count,
+    get_user_bots_by_owner as get_all_owner_bots,
 )
 
 logger = logging.getLogger(__name__)
@@ -567,22 +574,381 @@ async def bot_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def platform_stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/platform 管理员查看平台统计"""
+    """/platform 管理员查看平台统计和 Bot 详情"""
     from config import ADMIN_IDS
     user_id = update.effective_user.id
     if user_id not in ADMIN_IDS:
         await update.message.reply_text("⛔ 此命令仅限管理员使用。")
         return
 
+    # 检查是否有参数，如 /platform bots 显示详细 Bot 列表
+    args = context.args or []
+    show_bots = args and args[0] in ('bots', 'bot', 'detail', 'details')
+
     stats = get_platform_stats()
     mgr = get_bot_manager()
     running = mgr.active_count if mgr else 0
+    bl_count = get_blacklist_count()
 
+    # 总览信息
     text = (
         f"📊 <b>平台统计</b>\n\n"
         f"🤖 活跃 Bot 数: {stats['bot_count']} (运行中: {running})\n"
         f"👥 Bot 所有者数: {stats['owner_count']}\n"
         f"📁 总文件数: {stats['file_count']}\n"
-        f"📦 总集合数: {stats['col_count']}"
+        f"📦 总集合数: {stats['col_count']}\n"
+        f"🚫 黑名单用户: {bl_count}\n"
     )
-    await update.message.reply_text(text, parse_mode="HTML")
+
+    # 如果指定了 bots 参数，显示每个 Bot 的详细信息
+    if show_bots:
+        bot_details = get_platform_bot_details()
+        if not bot_details:
+            text += "\n📭 暂无 Bot。"
+        else:
+            text += f"\n{'='*20}\n"
+            text += f"🤖 <b>Bot 详细列表</b> (共 {len(bot_details)} 个)\n\n"
+            for i, bot in enumerate(bot_details, 1):
+                is_running = mgr and bot['id'] in mgr.get_all_apps()
+                status = "🟢" if is_running else ("🔴" if bot['status'] == 'active' else "⚠️")
+                text += (
+                    f"{i}. {status} <b>{escape(bot['bot_firstname'])}</b>\n"
+                    f"   📌 @{escape(bot['bot_username'])}\n"
+                    f"   🆔 Bot ID: <code>{bot['bot_id']}</code>\n"
+                    f"   👤 所有者: <code>{bot['owner_id']}</code>\n"
+                    f"   📁 文件: {bot['file_count']} | 📦 集合: {bot['col_count']} | 👥 用户: {bot['user_count']}\n"
+                    f"   📅 创建: {bot['created_at']}\n\n"
+                )
+
+            # 分页提示
+            text += (
+                f"\n💡 提示: 使用 /export 导出完整数据\n"
+                f"使用 /blacklist 管理黑名单"
+            )
+    else:
+        # 默认只显示摘要，提示可以查看详情
+        text += (
+            f"\n💡 使用 <code>/platform bots</code> 查看每个 Bot 的详细信息"
+        )
+
+    # Telegram 消息长度限制为 4096 字符，需要分段发送
+    if len(text) > 4000:
+        # 分段发送
+        parts = []
+        current = ""
+        for line in text.split('\n'):
+            if len(current) + len(line) + 1 > 3900:
+                parts.append(current)
+                current = line + '\n'
+            else:
+                current += line + '\n'
+        if current:
+            parts.append(current)
+
+        for i, part in enumerate(parts):
+            if i == 0:
+                await update.message.reply_text(part, parse_mode="HTML")
+            else:
+                await context.bot.send_message(
+                    chat_id=update.message.chat_id,
+                    text=part,
+                    parse_mode="HTML"
+                )
+    else:
+        await update.message.reply_text(text, parse_mode="HTML")
+
+
+# ==================== 黑名单管理 ====================
+
+async def blacklist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/blacklist 管理黑名单"""
+    from config import ADMIN_IDS
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("⛔ 此命令仅限管理员使用。")
+        return
+
+    if not context.args:
+        # 显示黑名单列表
+        bl = get_blacklist()
+        text = f"🚫 <b>黑名单管理</b>\n\n"
+        text += f"当前黑名单用户数: {len(bl)}\n\n"
+        text += "<b>用法：</b>\n"
+        text += "• <code>/blacklist add <用户ID> [原因]</code> — 添加到黑名单\n"
+        text += "• <code>/blacklist del <用户ID></code> — 从黑名单移除\n"
+        text += "• <code>/blacklist list</code> — 查看黑名单列表\n"
+        text += "• <code>/blacklist check <用户ID></code> — 检查用户状态\n\n"
+
+        if bl:
+            text += "<b>当前黑名单：</b>\n"
+            for entry in bl[:20]:  # 最多显示20条
+                reason = f" ({escape(entry['reason'])})" if entry['reason'] else ""
+                text += f"• <code>{entry['user_id']}</code>{reason} — {entry['created_at']}\n"
+            if len(bl) > 20:
+                text += f"\n... 还有 {len(bl) - 20} 条记录"
+        else:
+            text += "📭 黑名单为空。"
+
+        await update.message.reply_text(text, parse_mode="HTML")
+        return
+
+    action = context.args[0].lower()
+
+    if action == 'add':
+        if len(context.args) < 2:
+            await update.message.reply_text(
+                "用法：<code>/blacklist add <用户ID> [原因]</code>",
+                parse_mode="HTML"
+            )
+            return
+        try:
+            target_id = int(context.args[1])
+        except ValueError:
+            await update.message.reply_text("❌ 用户ID必须是数字。")
+            return
+
+        # 不能封禁管理员
+        if target_id in ADMIN_IDS:
+            await update.message.reply_text("❌ 不能将管理员加入黑名单。")
+            return
+
+        reason = ' '.join(context.args[2:]) if len(context.args) > 2 else ''
+        if add_to_blacklist(target_id, reason):
+            # 如果该用户有正在运行的 Bot，停止它们
+            target_bots = get_user_bots_by_owner(target_id)
+            mgr = get_bot_manager()
+            stopped = 0
+            for bot in target_bots:
+                if mgr and bot['id'] in mgr.get_all_apps():
+                    await mgr.stop_bot(bot['id'])
+                    stopped += 1
+                update_user_bot_status(bot['id'], 'banned')
+
+            text = f"✅ 用户 <code>{target_id}</code> 已加入黑名单。"
+            if reason:
+                text += f"\n原因: {escape(reason)}"
+            if stopped > 0:
+                text += f"\n🛑 已停止 {stopped} 个 Bot。"
+            if target_bots:
+                text += f"\n⚠️ 该用户有 {len(target_bots)} 个 Bot 已被标记为 banned。"
+
+            await update.message.reply_text(text, parse_mode="HTML")
+            logger.info("管理员 %s 将用户 %s 加入黑名单 (原因: %s)", user_id, target_id, reason)
+        else:
+            await update.message.reply_text("❌ 添加黑名单失败。")
+
+    elif action in ('del', 'remove', 'rm', 'delete'):
+        if len(context.args) < 2:
+            await update.message.reply_text(
+                "用法：<code>/blacklist del <用户ID></code>",
+                parse_mode="HTML"
+            )
+            return
+        try:
+            target_id = int(context.args[1])
+        except ValueError:
+            await update.message.reply_text("❌ 用户ID必须是数字。")
+            return
+
+        if remove_from_blacklist(target_id):
+            # 恢复该用户的 Bot
+            from database import get_db
+            conn = get_db()
+            try:
+                conn.execute(
+                    "UPDATE user_bots SET status = 'active' WHERE owner_id = ? AND status = 'banned'",
+                    (target_id,)
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+            await update.message.reply_text(
+                f"✅ 用户 <code>{target_id}</code> 已从黑名单移除。\n"
+                f"💡 如需重新启动其 Bot，请使用 /platform bots 查看，或让用户使用 /botstatus。",
+                parse_mode="HTML"
+            )
+            logger.info("管理员 %s 将用户 %s 从黑名单移除", user_id, target_id)
+        else:
+            await update.message.reply_text("⚠️ 该用户不在黑名单中。")
+
+    elif action == 'list':
+        bl = get_blacklist()
+        if not bl:
+            await update.message.reply_text("📭 黑名单为空。")
+            return
+
+        text = f"🚫 <b>黑名单列表</b> (共 {len(bl)} 人)\n\n"
+        for i, entry in enumerate(bl, 1):
+            reason = f" — {escape(entry['reason'])}" if entry['reason'] else ""
+            text += f"{i}. <code>{entry['user_id']}</code>{reason}\n    📅 {entry['created_at']}\n"
+
+        # 分段发送
+        if len(text) > 4000:
+            parts = []
+            current = ""
+            for line in text.split('\n'):
+                if len(current) + len(line) + 1 > 3900:
+                    parts.append(current)
+                    current = line + '\n'
+                else:
+                    current += line + '\n'
+            if current:
+                parts.append(current)
+            for i, part in enumerate(parts):
+                if i == 0:
+                    await update.message.reply_text(part, parse_mode="HTML")
+                else:
+                    await context.bot.send_message(
+                        chat_id=update.message.chat_id,
+                        text=part,
+                        parse_mode="HTML"
+                    )
+        else:
+            await update.message.reply_text(text, parse_mode="HTML")
+
+    elif action == 'check':
+        if len(context.args) < 2:
+            await update.message.reply_text(
+                "用法：<code>/blacklist check <用户ID></code>",
+                parse_mode="HTML"
+            )
+            return
+        try:
+            target_id = int(context.args[1])
+        except ValueError:
+            await update.message.reply_text("❌ 用户ID必须是数字。")
+            return
+
+        if is_user_blacklisted(target_id):
+            # 获取详细信息
+            bl_list = get_blacklist()
+            entry = next((e for e in bl_list if e['user_id'] == target_id), None)
+            text = f"🚫 用户 <code>{target_id}</code> <b>在黑名单中</b>。"
+            if entry:
+                text += f"\n📅 加入时间: {entry['created_at']}"
+                if entry['reason']:
+                    text += f"\n📝 原因: {escape(entry['reason'])}"
+            # 显示该用户的 Bot
+            target_bots = get_user_bots_by_owner(target_id)
+            if target_bots:
+                text += f"\n\n🤖 该用户的 Bot ({len(target_bots)} 个):"
+                for bot in target_bots:
+                    text += f"\n  • @{escape(bot['bot_username'])} — {bot['status']}"
+            await update.message.reply_text(text, parse_mode="HTML")
+        else:
+            target_bots = get_user_bots_by_owner(target_id)
+            text = f"✅ 用户 <code>{target_id}</code> 不在黑名单中。"
+            if target_bots:
+                text += f"\n🤖 该用户有 {len(target_bots)} 个 Bot。"
+            await update.message.reply_text(text, parse_mode="HTML")
+
+    else:
+        await update.message.reply_text(
+            "❓ 未知操作。可用操作: <code>add</code>, <code>del</code>, <code>list</code>, <code>check</code>",
+            parse_mode="HTML"
+        )
+
+
+# ==================== 导出功能 ====================
+
+async def export_data_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/export 管理员导出平台数据"""
+    from config import ADMIN_IDS
+    user_id = update.effective_user.id
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text("⛔ 此命令仅限管理员使用。")
+        return
+
+    args = context.args or []
+    export_format = args[0] if args else 'json'
+
+    status_msg = await update.message.reply_text("⏳ 正在准备导出数据...")
+
+    try:
+        data = get_platform_export_data()
+
+        if export_format in ('json', 'code'):
+            # JSON 格式导出
+            export_text = json.dumps(data, ensure_ascii=False, indent=2)
+            filename = f"platform_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            caption = (
+                f"📊 平台数据导出\n\n"
+                f"🤖 Bot: {len(data['bots'])} 个\n"
+                f"📁 文件: {len(data['files'])} 条\n"
+                f"📦 集合: {len(data['collections'])} 个\n"
+                f"🚫 黑名单: {len(data['blacklist'])} 人"
+            )
+        elif export_format == 'csv':
+            # CSV 格式导出（简化版，只导出文件）
+            output = io.StringIO()
+            output.write("code\tbot_username\tfile_type\tfile_size\tuser_id\tcreated_at\n")
+            for f in data['files']:
+                output.write(f"{f['code']}\t{f.get('bot_username', '')}\t{f['file_type']}\t{f['file_size']}\t{f['user_id']}\t{f['created_at']}\n")
+            export_text = output.getvalue()
+            filename = f"files_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.tsv"
+            caption = f"📁 文件数据导出，共 {len(data['files'])} 条记录。"
+        elif export_format == 'bots':
+            # 导出 Bot 列表
+            output = io.StringIO()
+            output.write("id\towner_id\tbot_id\tbot_username\tbot_firstname\tstatus\tcreated_at\n")
+            for b in data['bots']:
+                output.write(f"{b['id']}\t{b['owner_id']}\t{b['bot_id']}\t{b['bot_username']}\t{b['bot_firstname']}\t{b['status']}\t{b['created_at']}\n")
+            export_text = output.getvalue()
+            filename = f"bots_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.tsv"
+            caption = f"🤖 Bot 列表导出，共 {len(data['bots'])} 条记录。"
+        else:
+            await status_msg.edit_text(
+                "❓ 未知格式。\n\n"
+                "可用格式:\n"
+                "• <code>/export json</code> — 完整 JSON 数据（默认）\n"
+                "• <code>/export csv</code> — 文件列表 TSV\n"
+                "• <code>/export bots</code> — Bot 列表 TSV",
+                parse_mode="HTML"
+            )
+            return
+
+        bytes_io = io.BytesIO(export_text.encode('utf-8'))
+
+        await context.bot.send_document(
+            chat_id=update.message.chat_id,
+            document=bytes_io,
+            filename=filename,
+            caption=caption,
+        )
+
+        await status_msg.delete()
+        logger.info("管理员 %s 导出了平台数据 (格式: %s)", user_id, export_format)
+
+    except Exception as e:
+        await status_msg.edit_text(f"❌ 导出失败: {escape(str(e))}")
+        logger.error("导出数据失败: %s", e, exc_info=True)
+
+
+# ==================== 黑名单检查 ====================
+
+async def blacklist_check_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """黑名单检查中间件 - 在所有命令之前检查用户是否被封禁"""
+    if not update.effective_user:
+        return
+
+    user_id = update.effective_user.id
+    from config import ADMIN_IDS
+
+    # 管理员不受限制
+    if user_id in ADMIN_IDS:
+        return
+
+    # 检查黑名单
+    if is_user_blacklisted(user_id):
+        # 被封禁用户：静默忽略或发送提示
+        if update.message:
+            try:
+                await update.message.reply_text(
+                    "⛔ 你已被管理员禁止使用本平台。\n"
+                    "如有疑问请联系管理员。"
+                )
+            except Exception:
+                pass
+        # 不继续处理后续 handler
+        raise ApplicationHandlerStop()

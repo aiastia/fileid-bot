@@ -43,6 +43,8 @@ async def post_init(application: Application) -> None:
         ("delbot", "删除 Bot"),
         ("botstatus", "查看 Bot 运行状态"),
         ("platform", "平台统计（管理员）"),
+        ("blacklist", "黑名单管理（管理员）"),
+        ("export", "导出数据（管理员）"),
     ]
     try:
         await application.bot.set_my_commands(commands)
@@ -83,7 +85,9 @@ def main():
         master_start, handle_managed_bot, add_bot_cmd, new_bot_start,
         new_bot_input_username, new_bot_input_name, new_bot_input_token,
         new_bot_cancel, my_bots_cmd, delete_bot_cmd, bot_status_cmd,
-        platform_stats_cmd, INPUT_BOT_USERNAME, INPUT_BOT_NAME, INPUT_BOT_TOKEN
+        platform_stats_cmd, blacklist_cmd, export_data_cmd,
+        blacklist_check_handler,
+        INPUT_BOT_USERNAME, INPUT_BOT_NAME, INPUT_BOT_TOKEN
     )
 
     # /newbot 交互式对话（3步：用户名 → 名称 → Token）
@@ -106,6 +110,11 @@ def main():
         fallbacks=[CommandHandler("cancel", new_bot_cancel)],
     )
 
+    # 黑名单检查中间件（group=-2，最先执行）
+    application.add_handler(
+        TypeHandler(Update, blacklist_check_handler), group=-2
+    )
+
     # Managed Bot 自动处理（独立组，不影响其他处理器）
     application.add_handler(TypeHandler(Update, handle_managed_bot), group=-1)
 
@@ -117,6 +126,8 @@ def main():
     application.add_handler(CommandHandler("delbot", delete_bot_cmd))
     application.add_handler(CommandHandler("botstatus", bot_status_cmd))
     application.add_handler(CommandHandler("platform", platform_stats_cmd))
+    application.add_handler(CommandHandler("blacklist", blacklist_cmd))
+    application.add_handler(CommandHandler("export", export_data_cmd))
     application.add_error_handler(error_handler)
 
     # 全局引用（供 handlers_master 获取 bot_manager）
