@@ -97,8 +97,8 @@ def main():
         fallbacks=[CommandHandler("cancel", new_bot_cancel)],
     )
 
-    # Managed Bot 自动处理（最高优先级）
-    application.add_handler(TypeHandler(Update, handle_managed_bot))
+    # Managed Bot 自动处理（独立组，不影响其他处理器）
+    application.add_handler(TypeHandler(Update, handle_managed_bot), group=-1)
 
     application.add_handler(CommandHandler("start", master_start))
     application.add_handler(CommandHandler("help", master_start))
