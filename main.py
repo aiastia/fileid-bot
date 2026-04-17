@@ -10,7 +10,7 @@ import sys
 from telegram import Update
 from telegram.ext import (
     Application, ApplicationBuilder, CommandHandler, ContextTypes,
-    ConversationHandler, MessageHandler, filters
+    ConversationHandler, MessageHandler, TypeHandler, filters
 )
 
 from config import BOT_TOKEN, ADMIN_IDS, MAX_BOTS_PER_USER
@@ -80,10 +80,10 @@ def main():
 
     # 注册主Bot管理命令
     from handlers_master import (
-        master_start, add_bot_cmd, new_bot_start, new_bot_input_username,
-        new_bot_input_name, new_bot_input_token, new_bot_cancel,
-        my_bots_cmd, delete_bot_cmd, bot_status_cmd, platform_stats_cmd,
-        INPUT_BOT_USERNAME, INPUT_BOT_NAME, INPUT_BOT_TOKEN
+        master_start, handle_managed_bot, add_bot_cmd, new_bot_start,
+        new_bot_input_username, new_bot_input_name, new_bot_input_token,
+        new_bot_cancel, my_bots_cmd, delete_bot_cmd, bot_status_cmd,
+        platform_stats_cmd, INPUT_BOT_USERNAME, INPUT_BOT_NAME, INPUT_BOT_TOKEN
     )
 
     # /newbot 交互式对话（3步：用户名 → 名称 → Token）
@@ -96,6 +96,9 @@ def main():
         },
         fallbacks=[CommandHandler("cancel", new_bot_cancel)],
     )
+
+    # Managed Bot 自动处理（最高优先级）
+    application.add_handler(TypeHandler(Update, handle_managed_bot))
 
     application.add_handler(CommandHandler("start", master_start))
     application.add_handler(CommandHandler("help", master_start))
@@ -113,8 +116,9 @@ def main():
     logger.info("🚀 主Bot @%s 启动中...", "MasterBot")
     logger.info("📋 每用户最大Bot数: %d", MAX_BOTS_PER_USER)
 
-    # 启动主Bot（会阻塞直到停止）
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    # 启动主Bot（添加 managed_bot 到 allowed_updates）
+    all_updates = list(Update.ALL_TYPES) + ['managed_bot']
+    application.run_polling(allowed_updates=all_updates)
 
 
 if __name__ == '__main__':

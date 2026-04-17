@@ -17,7 +17,7 @@ from database import (
 
 logger = logging.getLogger(__name__)
 
-# Conversation states for /newbot
+# Conversation states for /newbot (备用，手动输入)
 INPUT_BOT_USERNAME, INPUT_BOT_NAME, INPUT_BOT_TOKEN = range(3)
 
 
@@ -50,6 +50,103 @@ async def master_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "所有 Bot 共享服务器资源，你无需部署！"
     )
     await update.message.reply_text(text, parse_mode="HTML")
+
+
+# ==================== Managed Bot 自动处理 ====================
+
+async def handle_managed_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """处理 managed_bot 更新：自动获取 Token 并启动 Bot"""
+    managed_info = update.api_kwargs.get('managed_bot')
+    if not managed_info:
+        return
+
+    logger.info("收到 managed_bot 更新: %s", managed_info)
+
+    owner = managed_info.get('user', {})
+    bot_info = managed_info.get('bot', {})
+    owner_id = owner.get('id')
+    bot_id = bot_info.get('id')
+    bot_username = bot_info.get('username', '')
+    bot_name = bot_info.get('first_name', '')
+
+    if not bot_id:
+        logger.error("managed_bot 更新缺少 bot id: %s", managed_info)
+        return
+
+    # 检查用户 Bot 数量
+    from config import MAX_BOTS_PER_USER
+    user_bots = get_user_bots_by_owner(owner_id)
+    if len(user_bots) >= MAX_BOTS_PER_USER:
+        logger.warning("用户 %s 已达最大 Bot 数量", owner_id)
+        return
+
+    # 检查 Bot 是否已添加
+    existing = get_user_bot_by_telegram_id(bot_id)
+    if existing:
+        logger.info("Bot @%s 已存在，跳过", bot_username)
+        return
+
+    # 通过 getManagedBotToken 获取 Token
+    try:
+        token = await context.bot._post(
+            'getManagedBotToken',
+            params={'user_id': bot_id},
+            return_type=str
+        )
+        logger.info("成功获取 managed bot token for @%s", bot_username)
+    except Exception as e:
+        logger.error("获取 managed bot token 失败: %s", e)
+        return
+
+    if not token:
+        logger.error("获取到的 token 为空")
+        return
+
+    # 检查 Token 是否已存在
+    existing_token = get_user_bot_by_token(token)
+    if existing_token:
+        logger.info("Token 已存在，跳过")
+        return
+
+    # 保存到数据库
+    record_id = add_user_bot(
+        owner_id=owner_id,
+        bot_token=token,
+        bot_id=bot_id,
+        bot_username=bot_username,
+        bot_firstname=bot_name,
+    )
+
+    if not record_id:
+        logger.error("保存 managed bot 失败")
+        return
+
+    # 启动 Bot
+    mgr = get_bot_manager()
+    if mgr:
+        bot_record = get_user_bot_by_id(record_id)
+        success = await mgr.start_bot(bot_record)
+        if success:
+            logger.info("✅ Managed Bot @%s 自动启动成功 (owner=%s)", bot_username, owner_id)
+            # 尝试通知用户
+            try:
+                await context.bot.send_message(
+                    chat_id=owner_id,
+                    text=(
+                        f"✅ <b>Bot 创建成功并已启动！</b>\n\n"
+                        f"🤖 名称：{escape(bot_name)}\n"
+                        f"📌 用户名：@{escape(bot_username)}\n"
+                        f"🆔 Bot ID：<code>{bot_id}</code>\n\n"
+                        f"现在直接向 @{escape(bot_username)} 发送文件即可使用！"
+                    ),
+                    parse_mode="HTML"
+                )
+            except Exception as e:
+                logger.warning("通知用户失败: %s", e)
+        else:
+            logger.error("Managed Bot @%s 启动失败", bot_username)
+    else:
+        logger.error("BotManager 未初始化")
 
 
 # ==================== /newbot 交互式创建 ====================
@@ -113,7 +210,7 @@ async def new_bot_input_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data['new_bot_name'] = bot_name
     master_username = context.bot.username
 
-    # 生成 BotFather newbot 深度链接
+    # 生成 BotFather newbot 深度链接（Managed Bot）
     encoded_name = urllib.parse.quote(bot_name, safe='')
     create_link = f"https://t.me/newbot/{master_username}/{bot_username}?name={encoded_name}"
 
@@ -125,12 +222,11 @@ async def new_bot_input_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"✅ <b>创建信息确认</b>\n\n"
         f"Bot 名称：<code>{escape(bot_name)}</code>\n"
         f"Bot 用户名：<code>@{escape(bot_username)}</code>\n\n"
-        f"📌 <b>创建链接：</b>\n"
-        f"<code>{escape(create_link)}</code>\n\n"
         f"👇 <b>下一步：</b>\n"
         f"1. 点击上方按钮创建 Bot\n"
-        f"2. BotFather 会给你一个 <b>Token</b>\n"
-        f"3. <b>直接把 Token 发到这里</b>，我会自动启动你的 Bot\n\n"
+        f"2. BotFather 会自动创建并返回 Token\n"
+        f"3. 系统会 <b>自动获取 Token 并启动</b> 你的 Bot\n"
+        f"4. 如果未自动启动，请把 Token 发到这里\n\n"
         f"💡 输入 /cancel 取消操作"
     )
 
@@ -139,11 +235,10 @@ async def new_bot_input_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def new_bot_input_token(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """接收 Token 并自动注册启动 Bot"""
+    """接收 Token 并自动注册启动 Bot（备用，如果自动获取失败）"""
     token = update.message.text.strip()
     user_id = update.effective_user.id
 
-    # 检查 Token 格式
     if ":" not in token or len(token) < 10:
         await update.message.reply_text(
             "❌ 这不像是一个有效的 Token，请重新输入。\n\n"
@@ -152,7 +247,6 @@ async def new_bot_input_token(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return INPUT_BOT_TOKEN
 
-    # 检查 Token 是否已存在
     existing = get_user_bot_by_token(token)
     if existing:
         await update.message.reply_text(
@@ -164,7 +258,6 @@ async def new_bot_input_token(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     status_msg = await update.message.reply_text("⏳ 正在校验 Token 并启动 Bot...")
 
-    # 校验 Token
     from telegram import Bot
     test_bot = None
     try:
@@ -182,18 +275,16 @@ async def new_bot_input_token(update: Update, context: ContextTypes.DEFAULT_TYPE
             except Exception:
                 pass
 
-    # 检查 Bot 是否已被添加
     existing_by_id = get_user_bot_by_telegram_id(bot_info.id)
     if existing_by_id:
         await status_msg.edit_text(
-            f"⚠️ Bot @{escape(bot_info.username)} 已被添加（可能是不同 Token）。",
+            f"⚠️ Bot @{escape(bot_info.username)} 已被添加。",
             parse_mode="HTML"
         )
         context.user_data.pop('new_bot_username', None)
         context.user_data.pop('new_bot_name', None)
         return ConversationHandler.END
 
-    # 检查用户 Bot 数量
     from config import MAX_BOTS_PER_USER
     user_bots = get_user_bots_by_owner(user_id)
     if len(user_bots) >= MAX_BOTS_PER_USER:
@@ -205,7 +296,6 @@ async def new_bot_input_token(update: Update, context: ContextTypes.DEFAULT_TYPE
         context.user_data.pop('new_bot_name', None)
         return ConversationHandler.END
 
-    # 保存到数据库
     record_id = add_user_bot(
         owner_id=user_id,
         bot_token=token,
@@ -218,7 +308,6 @@ async def new_bot_input_token(update: Update, context: ContextTypes.DEFAULT_TYPE
         await status_msg.edit_text("❌ 添加失败，请重试。")
         return INPUT_BOT_TOKEN
 
-    # 启动 Bot
     mgr = get_bot_manager()
     if mgr:
         bot_record = get_user_bot_by_id(record_id)
@@ -232,17 +321,14 @@ async def new_bot_input_token(update: Update, context: ContextTypes.DEFAULT_TYPE
                 f"现在直接向 @{escape(bot_info.username)} 发送文件即可使用！",
                 parse_mode="HTML"
             )
-            logger.info("用户 %s 通过 /newbot 创建并启动了 Bot @%s", user_id, bot_info.username)
         else:
             await status_msg.edit_text(
-                f"⚠️ Bot 已保存但启动失败，请联系管理员。\n\n"
-                f"🤖 @{escape(bot_info.username)}",
+                f"⚠️ Bot 已保存但启动失败，请联系管理员。",
                 parse_mode="HTML"
             )
     else:
         await status_msg.edit_text("❌ BotManager 未初始化，请联系管理员。")
 
-    # 清理
     context.user_data.pop('new_bot_username', None)
     context.user_data.pop('new_bot_name', None)
     return ConversationHandler.END
@@ -306,7 +392,7 @@ async def add_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     existing_by_id = get_user_bot_by_telegram_id(bot_info.id)
     if existing_by_id:
         await status_msg.edit_text(
-            f"⚠️ Bot @{escape(bot_info.username)} 已被添加（可能是不同 Token）。",
+            f"⚠️ Bot @{escape(bot_info.username)} 已被添加。",
             parse_mode="HTML"
         )
         return
@@ -342,15 +428,13 @@ async def add_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 f"🤖 名称：{escape(bot_info.first_name)}\n"
                 f"📌 用户名：@{escape(bot_info.username)}\n"
                 f"🆔 Bot ID：<code>{bot_info.id}</code>\n\n"
-                f"现在直接向 @{escape(bot_info.username)} 发送文件即可使用！\n"
-                f"发送代码即可获取文件。",
+                f"现在直接向 @{escape(bot_info.username)} 发送文件即可使用！",
                 parse_mode="HTML"
             )
             logger.info("用户 %s 添加了 Bot @%s", user_id, bot_info.username)
         else:
             await status_msg.edit_text(
-                f"⚠️ Bot 已保存但启动失败，请联系管理员。\n\n"
-                f"🤖 @{escape(bot_info.username)}",
+                f"⚠️ Bot 已保存但启动失败，请联系管理员。",
                 parse_mode="HTML"
             )
     else:
