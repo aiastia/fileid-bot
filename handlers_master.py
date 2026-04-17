@@ -82,8 +82,10 @@ async def add_bot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await status_msg.edit_text(f"❌ Token 校验失败：{str(e)[:100]}\n\n请检查Token是否正确。")
         return
     finally:
-        if not test_bot.session.closed:
-            await test_bot.session.close()
+        try:
+            await test_bot.shutdown()
+        except Exception:
+            pass
 
     # 检查是否是同一个 Bot 被不同 token 添加
     existing_by_id = get_user_bot_by_telegram_id(bot_info.id)

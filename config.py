@@ -13,7 +13,6 @@ if env_path.exists():
 
 BOT_TOKEN = os.environ.get('BOT_TOKEN', '')
 ADMIN_IDS = [int(x) for x in os.environ.get('ADMIN_IDS', '').split(',') if x.strip().isdigit()]
-ENCRYPTION_KEY = os.environ.get('ENCRYPTION_KEY', '')
 CODE_PREFIX = os.environ.get('CODE_PREFIX', '')  # 自定义代码前缀，默认使用 bot 用户名（不带@）
 
 MAX_COLLECTION_FILES = 999

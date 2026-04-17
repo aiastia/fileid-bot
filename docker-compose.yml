@@ -10,7 +10,6 @@ services:
       - TZ=Asia/Shanghai
       - BOT_TOKEN=${BOT_TOKEN}
       - ADMIN_IDS=${ADMIN_IDS:-}
-      - ENCRYPTION_KEY=${ENCRYPTION_KEY:-}
     logging:
       options:
         max-size: "10m"

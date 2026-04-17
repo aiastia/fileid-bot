@@ -5,7 +5,6 @@ from datetime import datetime
 from typing import Optional, List, Dict
 
 from config import DB_PATH
-from crypto import encrypt_file_id, decrypt_file_id
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +43,6 @@ def init_db():
                 bot_username TEXT,
                 file_type TEXT NOT NULL,
                 telegram_file_id TEXT NOT NULL,
-                encrypted_file_id TEXT,
                 file_size INTEGER DEFAULT 0,
                 file_unique_id TEXT,
                 user_id INTEGER,
@@ -117,14 +115,13 @@ def save_file(user_id: int, file_type: str, file_id: str,
         prefix = FILE_TYPE_PREFIX.get(file_type, 'd')
         full_code = f"{code_prefix}_{prefix}:{raw_code}"
 
-        encrypted_fid = encrypt_file_id(file_id)
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         conn.execute(
             """INSERT INTO file_mappings 
-               (code, bot_username, file_type, telegram_file_id, encrypted_file_id, file_size, file_unique_id, user_id, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (full_code, bot_username, file_type, file_id, encrypted_fid, file_size, file_unique_id, user_id, now)
+               (code, bot_username, file_type, telegram_file_id, file_size, file_unique_id, user_id, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (full_code, bot_username, file_type, file_id, file_size, file_unique_id, user_id, now)
         )
         conn.commit()
         return full_code

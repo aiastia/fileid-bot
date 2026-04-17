@@ -7,7 +7,6 @@
 - 🏠 **多Bot托管** - 一个服务器运行多个Bot，用户自助管理
 - 🔄 **文件ID互转** - 发送文件获取代码，发送代码获取文件
 - 📦 **集合功能** - 批量打包文件，一次发送多个
-- 🔐 **加密存储** - 文件ID加密存储，安全可靠
 - 🐳 **Docker部署** - 一键部署，开箱即用
 - 📊 **管理面板** - 平台统计数据一目了然
 
@@ -42,9 +41,6 @@ BOT_TOKEN=123456:ABC-DEF...
 
 # 管理员ID（从 @userinfobot 获取）
 ADMIN_IDS=123456789
-
-# 加密密钥（首次运行自动生成）
-ENCRYPTION_KEY=
 
 # 每用户最大Bot数
 MAX_BOTS_PER_USER=5
@@ -109,8 +105,6 @@ python main.py
 ├── handlers_callbacks.py# 用户Bot回调处理器
 ├── senders.py           # 文件发送逻辑
 ├── utils.py             # 工具函数
-├── crypto.py            # 加密模块
-├── build.py             # 构建脚本
 ├── Dockerfile           # Docker镜像
 ├── docker-compose.yml   # Docker Compose配置
 └── requirements.txt     # Python依赖
@@ -122,7 +116,6 @@ python main.py
 |----------|------|--------|------|
 | `BOT_TOKEN` | ✅ | - | 主Bot Token |
 | `ADMIN_IDS` | ❌ | - | 管理员Telegram ID |
-| `ENCRYPTION_KEY` | ❌ | 自动生成 | 文件ID加密密钥 |
 | `MAX_BOTS_PER_USER` | ❌ | 5 | 每用户最大Bot数 |
 | `CODE_PREFIX` | ❌ | Bot用户名 | 文件代码前缀 |
 
