@@ -178,30 +178,37 @@ async def get_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     code_prefix = get_code_prefix(bot_username)
     result = None
     file_type = None
+    file_unique_id = ''
 
     if replied.photo:
         photo = replied.photo[len(replied.photo) - 1]
         result = save_file(user_id, 'photo', photo.file_id, photo.file_size or 0, photo.file_unique_id or '', bot_username, code_prefix)
         file_type = '图片'
+        file_unique_id = photo.file_unique_id or ''
     elif replied.video:
         result = save_file(user_id, 'video', replied.video.file_id, replied.video.file_size or 0, replied.video.file_unique_id or '', bot_username, code_prefix)
         file_type = '视频'
+        file_unique_id = replied.video.file_unique_id or ''
     elif replied.audio:
         result = save_file(user_id, 'audio', replied.audio.file_id, replied.audio.file_size or 0, replied.audio.file_unique_id or '', bot_username, code_prefix)
         file_type = '音频'
+        file_unique_id = replied.audio.file_unique_id or ''
     elif replied.document:
         result = save_file(user_id, 'document', replied.document.file_id, replied.document.file_size or 0, replied.document.file_unique_id or '', bot_username, code_prefix)
         file_type = '文档'
+        file_unique_id = replied.document.file_unique_id or ''
     elif replied.voice:
         result = save_file(user_id, 'voice', replied.voice.file_id, replied.voice.file_size or 0, replied.voice.file_unique_id or '', bot_username, code_prefix)
         file_type = '语音'
+        file_unique_id = replied.voice.file_unique_id or ''
     else:
         await update.message.reply_text("❌ 回复的消息不包含可识别的媒体文件。")
         return
 
     if result:
+        uid_info = f" file_unique_id: `{file_unique_id}`" if file_unique_id else ""
         await update.message.reply_text(
-            f"✅ {file_type}ID已保存！\n\n代码: `{result}`\n\n将此代码发送给 `@{bot_username}` 即可获取文件。",
+            f"✅ {file_type}ID已保存！{uid_info}\n\n代码: `{result}`\n\n将此代码发送给 `@{bot_username}` 即可获取文件。",
             parse_mode="Markdown",
             reply_to_message_id=update.message.reply_to_message.message_id
         )

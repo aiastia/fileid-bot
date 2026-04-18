@@ -51,7 +51,8 @@ async def handle_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             return
 
         type_name = FILE_TYPE_MAP.get(file_type, file_type)
-        reply_text = f"✅ {type_name}已保存！\n\n代码: `{code}`"
+        uid_info = f" file_unique_id: `{file_unique_id}`" if file_unique_id else ""
+        reply_text = f"✅ {type_name}已保存！{uid_info}\n\n代码: `{code}`"
         reply_kwargs = {'text': reply_text, 'parse_mode': 'Markdown', 'reply_to_message_id': message.message_id}
 
         # 如果正在创建集合，追加文件
